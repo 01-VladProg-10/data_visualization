@@ -1,7 +1,7 @@
-"""Sesja danych i wczytywanie pliku CSV.
+"""Sesja danych: wczytywanie CSV i profil zbioru.
 
-Operacje czyszczenia i wykresy dochodzą w kolejnych etapach. Ten moduł tylko
-wczytuje plik i trzyma dwie kopie tabeli: surowe dane oraz bieżący stan.
+Czyszczenie i wykresy dochodzą w kolejnych etapach. Moduł trzyma dwie kopie
+tabeli: surowe dane oraz bieżący stan. Profil tylko czyta bieżący stan.
 """
 
 import csv
@@ -14,6 +14,60 @@ import pandas as pd
 
 class DataLoadError(Exception):
     """Błąd wczytania CSV. Treść wyjątku mówi, co użytkownik może poprawić."""
+
+
+@dataclass
+class DataProfile:
+    """Opis bieżących danych. Sam profil nie trzyma kopii tabeli i niczego nie zmienia."""
+
+    row_count: int
+    column_count: int
+    duplicate_count: int
+    column_summary: pd.DataFrame
+    numeric_stats: pd.DataFrame
+    text_stats: pd.DataFrame
+
+    def to_text(self) -> str:
+        """Tekstowy raport profilu, do podglądu w GUI i do omówienia na obronie."""
+        lines = [
+            f"Rekordy: {self.row_count}",
+            f"Kolumny: {self.column_count}",
+            f"Nadmiarowe pełne duplikaty: {self.duplicate_count}",
+            "",
+            "Kolumny:",
+        ]
+        if self.column_summary.empty:
+            lines.append("(brak kolumn)")
+        else:
+            for name, row in self.column_summary.iterrows():
+                lines.append(
+                    f"- {name}: typ {row['dtype']}, braki {int(row['missing'])} "
+                    f"({float(row['missing_pct']):.2f}%), unikalne {int(row['unique'])}"
+                )
+
+        lines.extend(["", "Statystyki liczbowe:"])
+        if self.numeric_stats.empty:
+            lines.append("(brak kolumn liczbowych)")
+        else:
+            for name, row in self.numeric_stats.iterrows():
+                lines.append(
+                    f"- {name}: n={int(row['count'])}, średnia {_format_stat(row['mean'])}, "
+                    f"odch. std. {_format_stat(row['std'])}, min {_format_stat(row['min'])}, "
+                    f"Q1 {_format_stat(row['q1'])}, mediana {_format_stat(row['median'])}, "
+                    f"Q3 {_format_stat(row['q3'])}, max {_format_stat(row['max'])}"
+                )
+
+        lines.extend(["", "Statystyki tekstowe:"])
+        if self.text_stats.empty:
+            lines.append("(brak kolumn tekstowych)")
+        else:
+            for name, row in self.text_stats.iterrows():
+                lines.append(
+                    f"- {name}: n={int(row['count'])}, unikalne {int(row['unique'])}, "
+                    f"najczęstsza {_format_category(row['top'])}, "
+                    f"liczba wystąpień {int(row['freq'])}"
+                )
+        return "\n".join(lines)
 
 
 @dataclass
@@ -73,6 +127,23 @@ class DataSession:
         return (
             f"Wczytano rekordy: {len(self.raw)}, kolumny: {len(self.raw.columns)}, "
             f"separator: '{self.separator}', kodowanie: {self.encoding}."
+        )
+
+    def profile(self) -> DataProfile:
+        """Buduje profil bieżących danych i nie zmienia sesji.
+
+        `duplicate_count` liczy nadmiarowe pełne kopie: tyle rekordów usunęłoby
+        późniejsze kasowanie duplikatów. Brak nie jest liczony jako unikalna
+        wartość. Odchylenie standardowe jest próbkowe (dzielenie przez n - 1).
+        """
+        frame = self.current
+        return DataProfile(
+            row_count=int(len(frame)),
+            column_count=int(len(frame.columns)),
+            duplicate_count=_full_duplicate_count(frame),
+            column_summary=_column_summary(frame),
+            numeric_stats=_numeric_stats(frame),
+            text_stats=_text_stats(frame),
         )
 
 
@@ -239,3 +310,97 @@ def _validate_records(text: str, separator: str) -> None:
         raise DataLoadError(
             "Plik nie zawiera rekordów danych. Dodaj co najmniej jeden wiersz pod nagłówkiem."
         )
+
+
+def _full_duplicate_count(frame: pd.DataFrame) -> int:
+    """Ile rekordów jest dokładną kopią wcześniejszego rekordu.
+
+    Porównanie obejmuje wszystkie kolumny. Zgodność tylko w części kolumn
+    nie jest duplikatem. Braki w tych samych miejscach są traktowane jak równe,
+    tak samo jak później przy usuwaniu pełnych duplikatów.
+    """
+    if frame.empty:
+        return 0
+    return int(frame.duplicated().sum())
+
+
+def _column_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = ["dtype", "missing", "missing_pct", "unique"]
+    if len(frame.columns) == 0:
+        summary = pd.DataFrame(columns=columns)
+        summary.index.name = "column"
+        return summary
+
+    summary = pd.DataFrame(
+        {
+            "dtype": frame.dtypes.astype(str),
+            "missing": frame.isna().sum().astype(int),
+            "missing_pct": frame.isna().mean().mul(100).round(2),
+            "unique": frame.nunique(dropna=True).astype(int),
+        }
+    )
+    summary.index.name = "column"
+    return summary
+
+
+def _numeric_stats(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = ["count", "mean", "std", "min", "q1", "median", "q3", "max"]
+    numeric = frame.select_dtypes(include="number")
+    rows = []
+    for name in numeric.columns:
+        values = numeric[name]
+        rows.append(
+            {
+                "count": int(values.notna().sum()),
+                "mean": values.mean(),
+                "std": values.std(),
+                "min": values.min(),
+                "q1": values.quantile(0.25),
+                "median": values.median(),
+                "q3": values.quantile(0.75),
+                "max": values.max(),
+            }
+        )
+    stats = pd.DataFrame(rows, index=numeric.columns, columns=columns)
+    stats.index.name = "column"
+    return stats
+
+
+def _text_stats(frame: pd.DataFrame) -> pd.DataFrame:
+    columns = ["count", "unique", "top", "freq"]
+    other = frame.select_dtypes(exclude="number")
+    rows = []
+    for name in other.columns:
+        values = other[name]
+        present = values.dropna()
+        if present.empty:
+            top = pd.NA
+            frequency = 0
+        else:
+            # Przy remisie mode() zwraca kilka wartości. Pokazujemy pierwszą.
+            top = present.mode().iloc[0]
+            frequency = int((present == top).sum())
+        rows.append(
+            {
+                "count": int(present.shape[0]),
+                "unique": int(values.nunique(dropna=True)),
+                "top": top,
+                "freq": frequency,
+            }
+        )
+    stats = pd.DataFrame(rows, index=other.columns, columns=columns)
+    stats.index.name = "column"
+    return stats
+
+
+def _format_stat(value: object) -> str:
+    if pd.isna(value):
+        return "brak"
+    number = float(value)
+    return f"{number:.4f}".rstrip("0").rstrip(".")
+
+
+def _format_category(value: object) -> str:
+    if pd.isna(value):
+        return "brak"
+    return str(value)
