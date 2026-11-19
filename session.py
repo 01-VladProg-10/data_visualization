@@ -1,7 +1,7 @@
-"""Sesja danych: wczytywanie CSV i profil zbioru.
+"""Sesja danych: wczytywanie CSV, profil i reguły jakości.
 
 Czyszczenie i wykresy dochodzą w kolejnych etapach. Moduł trzyma dwie kopie
-tabeli: surowe dane oraz bieżący stan. Profil tylko czyta bieżący stan.
+tabeli: surowe dane oraz bieżący stan. Profil i reguły tylko czytają bieżący stan.
 """
 
 import csv
@@ -14,6 +14,10 @@ import pandas as pd
 
 class DataLoadError(Exception):
     """Błąd wczytania CSV. Treść wyjątku mówi, co użytkownik może poprawić."""
+
+
+class QualityRuleError(Exception):
+    """Niepoprawna reguła jakości. Treść wyjątku mówi, co poprawić."""
 
 
 @dataclass
@@ -67,6 +71,30 @@ class DataProfile:
                     f"najczęstsza {_format_category(row['top'])}, "
                     f"liczba wystąpień {int(row['freq'])}"
                 )
+        return "\n".join(lines)
+
+
+@dataclass
+class QualityReport:
+    """Wynik reguły jakości. Sama reguła niczego nie usuwa ani nie poprawia."""
+
+    column: str
+    rule_name: str
+    parameters: str
+    description: str
+    lower: float | None
+    upper: float | None
+    affected: int
+    matched: pd.Series
+
+    def to_text(self) -> str:
+        """Raport reguły: opis, liczba rekordów i ich indeksy."""
+        if self.affected == 0:
+            return self.description
+        labels = [str(label) for label, flag in self.matched.items() if bool(flag)]
+        lines = [self.description, f"Indeksy wierszy: {', '.join(labels[:20])}"]
+        if len(labels) > 20:
+            lines.append(f"Pokazano 20 z {len(labels)} indeksów.")
         return "\n".join(lines)
 
 
@@ -144,6 +172,115 @@ class DataSession:
             column_summary=_column_summary(frame),
             numeric_stats=_numeric_stats(frame),
             text_stats=_text_stats(frame),
+        )
+
+    def range_report(self, column: str, minimum: float, maximum: float) -> QualityReport:
+        """Wskazuje rekordy spoza podanego zakresu. Nie zmienia danych.
+
+        Granice są włączone: wartość równa minimum albo maksimum jest poprawna.
+        Puste komórki nie są wartościami poza zakresem.
+        """
+        lower = _require_finite_number(minimum, "Dolna granica")
+        upper = _require_finite_number(maximum, "Górna granica")
+        if lower > upper:
+            raise QualityRuleError(
+                "Dolna granica nie może być większa od górnej. "
+                "Zamień granice albo popraw wpisane wartości."
+            )
+
+        values = _require_numeric_column(self.current, column)
+        matched = values.notna() & ((values < lower) | (values > upper))
+        matched = matched.fillna(False).astype(bool).copy()
+        affected = int(matched.sum())
+        parameters = f"minimum={_format_stat(lower)}, maximum={_format_stat(upper)}"
+        description = (
+            f"Zakres kolumny {column}: od {_format_stat(lower)} do {_format_stat(upper)} włącznie. "
+            f"Liczba rekordów poza zakresem: {affected}. "
+            "Braki nie są liczone jako wartości poza zakresem. Dane nie zostały zmienione."
+        )
+        return QualityReport(
+            column=str(column),
+            rule_name="zakres",
+            parameters=parameters,
+            description=description,
+            lower=lower,
+            upper=upper,
+            affected=affected,
+            matched=matched,
+        )
+
+    def iqr_report(self, column: str, factor: float = 1.5) -> QualityReport:
+        """Wskazuje obserwacje odstające metodą IQR. Nie zmienia danych.
+
+        Przedział to od Q1 - mnożnik * IQR do Q3 + mnożnik * IQR.
+        Domyślny mnożnik 1.5 jest zwykłą granicą Tukey'a. Wartość poza tym
+        przedziałem nie jest jeszcze błędem: dopiero późniejsza decyzja użytkownika
+        może ją oznaczyć, przyciąć albo usunąć.
+        """
+        factor_value = _require_finite_number(factor, "Mnożnik IQR")
+        if factor_value <= 0:
+            raise QualityRuleError(
+                "Mnożnik IQR musi być liczbą większą od zera. Zwykle używa się 1.5."
+            )
+
+        values = _require_numeric_column(self.current, column)
+        q1 = values.quantile(0.25)
+        q3 = values.quantile(0.75)
+        matched = pd.Series(False, index=self.current.index)
+        lower = None
+        upper = None
+        affected = 0
+
+        if pd.isna(q1) or pd.isna(q3):
+            parameters = f"factor={_format_stat(factor_value)}"
+            description = (
+                f"Metoda IQR nie działa dla kolumny {column}: za mało wartości liczbowych, "
+                "żeby policzyć kwartyle. Uzupełnij kolumnę albo wybierz inną. "
+                "Dane nie zostały zmienione."
+            )
+        else:
+            iqr = float(q3 - q1)
+            if iqr == 0:
+                lower = float(q1)
+                upper = float(q3)
+                parameters = (
+                    f"factor={_format_stat(factor_value)}, q1={_format_stat(q1)}, "
+                    f"q3={_format_stat(q3)}, iqr=0"
+                )
+                description = (
+                    f"Metoda IQR dla kolumny {column}: Q1={_format_stat(q1)}, "
+                    f"Q3={_format_stat(q3)}, IQR=0, mnożnik {_format_stat(factor_value)}. "
+                    "Przedział nie wyróżnia obserwacji odstających, bo wartości skupiają się "
+                    "w jednym punkcie. Dane nie zostały zmienione."
+                )
+            else:
+                lower = float(q1 - factor_value * iqr)
+                upper = float(q3 + factor_value * iqr)
+                matched = values.notna() & ((values < lower) | (values > upper))
+                matched = matched.fillna(False).astype(bool)
+                affected = int(matched.sum())
+                parameters = (
+                    f"factor={_format_stat(factor_value)}, q1={_format_stat(q1)}, "
+                    f"q3={_format_stat(q3)}, iqr={_format_stat(iqr)}"
+                )
+                description = (
+                    f"Metoda IQR dla kolumny {column}: Q1={_format_stat(q1)}, "
+                    f"Q3={_format_stat(q3)}, IQR={_format_stat(iqr)}, "
+                    f"mnożnik {_format_stat(factor_value)}. "
+                    f"Przedział od {_format_stat(lower)} do {_format_stat(upper)}. "
+                    f"Liczba rekordów poza przedziałem: {affected}. "
+                    "Wartość odstająca nie jest automatycznie błędem. Dane nie zostały zmienione."
+                )
+
+        return QualityReport(
+            column=str(column),
+            rule_name="iqr",
+            parameters=parameters,
+            description=description,
+            lower=lower,
+            upper=upper,
+            affected=affected,
+            matched=matched.copy(),
         )
 
 
@@ -404,3 +541,35 @@ def _format_category(value: object) -> str:
     if pd.isna(value):
         return "brak"
     return str(value)
+
+
+def _require_finite_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or value is None:
+        raise QualityRuleError(f"{label} musi być liczbą. Podaj na przykład 0 albo 1.5.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise QualityRuleError(f"{label} musi być liczbą. Podaj na przykład 0 albo 1.5.") from error
+    if pd.isna(number) or number == float("inf") or number == float("-inf"):
+        raise QualityRuleError(f"{label} musi być skończoną liczbą. Podaj na przykład 0 albo 1.5.")
+    return number
+
+
+def _require_numeric_column(frame: pd.DataFrame, column: object) -> pd.Series:
+    if column not in frame.columns:
+        available = ", ".join(str(name) for name in frame.columns) or "brak kolumn"
+        raise QualityRuleError(
+            f"W zbiorze nie ma kolumny '{column}'. Wybierz kolumnę z listy: {available}."
+        )
+    values = frame[column]
+    if isinstance(values, pd.DataFrame):
+        raise QualityRuleError(
+            f"Kolumna '{column}' występuje więcej niż raz. "
+            "Zostaw w pliku jedną kolumnę o tej nazwie."
+        )
+    if pd.api.types.is_bool_dtype(values) or not pd.api.types.is_numeric_dtype(values):
+        raise QualityRuleError(
+            f"Kolumna '{column}' nie jest liczbowa. "
+            "Wybierz kolumnę z liczbami, na przykład cenę albo wiek."
+        )
+    return pd.to_numeric(values, errors="coerce")
