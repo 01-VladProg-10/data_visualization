@@ -1,0 +1,1 @@
+Najsilniejszy związek jest dodatni: total_rooms i households, r = 1.00. Korelacja opisuje tylko współwystępowanie. Nie oznacza, że jedna zmienna powoduje drugą.

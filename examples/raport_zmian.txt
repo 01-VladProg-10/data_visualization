@@ -1,0 +1,6 @@
+Dziennik zmian:
+1. 2026-11-25 12:59:28 | duplikaty | pełne duplikaty, zachowany pierwszy rekord | rekordy przed: 8, po: 7, dotknięte: 1
+2. 2026-11-25 12:59:28 | zakres | kolumna=longitude, decyzja=usun, wykryto=1, minimum=-125, maximum=-114 | rekordy przed: 7, po: 6, dotknięte: 1
+3. 2026-11-25 12:59:28 | braki | strategia=imputacja, metoda=mediana, kolumna=total_bedrooms, wartość=129 | rekordy przed: 6, po: 6, dotknięte: 1
+4. 2026-11-25 12:59:28 | braki | strategia=imputacja, metoda=moda, kolumna=ocean_proximity, wartość=NEAR BAY | rekordy przed: 6, po: 6, dotknięte: 1
+5. 2026-11-25 12:59:28 | iqr | kolumna=median_income, decyzja=oznacz, wykryto=1, factor=1.5, q1=2.675, q3=8.3193, iqr=5.6443, kolumna_flagi=median_income_odstajaca | rekordy przed: 6, po: 6, dotknięte: 1

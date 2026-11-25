@@ -1,8 +1,8 @@
 """Sesja danych: wczytywanie CSV, profil, reguły jakości i czyszczenie.
 
-Wykresy dochodzą w kolejnym etapie. Moduł trzyma dwie kopie tabeli: surowe
-dane oraz bieżący stan. Czyszczenie zmienia tylko bieżący stan i dopisuje
-wpis do dziennika. Powrót do danych surowych nie wymaga ponownego wczytania pliku.
+Wykresy są w module charts. Ten moduł trzyma dwie kopie tabeli: surowe dane
+oraz bieżący stan. Czyszczenie zmienia tylko bieżący stan i dopisuje wpis
+do dziennika. Powrót do danych surowych nie wymaga ponownego wczytania pliku.
 """
 
 import csv
