@@ -135,4 +135,4 @@ Podczas rysowania mapy korelacji Seaborn wypisuje własne ostrzeżenie o przysz�
 - Seaborn: https://seaborn.pydata.org/tutorial.html
 - Instrukcja przedmiotu: Programowanie V, Projekt 2, wersja z 5 października 2026. Fragment z klasą `DataSession` jest wzorem z tej instrukcji. Strategie braków, reguły, pozostałe wykresy, okno i testy są dopisane w projekcie.
 
-Do pomocy w przygotowaniu kodu, testów i tego opisu użyto asystenta w Cursorze.
+Do pomocy użyto asystenta w Cursorze.
